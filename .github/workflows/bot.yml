@@ -1,0 +1,50 @@
+name: Telepost Bot 24/7
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20160  # 14 days max
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Create data directory
+        run: mkdir -p data
+
+      - name: Start bot
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          BOT_USERNAME: ${{ secrets.BOT_USERNAME }}
+          OWNER_ID: ${{ secrets.OWNER_ID }}
+          ADMIN_IDS: ${{ secrets.ADMIN_IDS }}
+          CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+          CHANNEL_USERNAME: ${{ secrets.CHANNEL_USERNAME }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          SITE_URL: ${{ secrets.SITE_URL }}
+          DB_PATH: data/telepost.db
+          LOG_LEVEL: INFO
+        run: |
+          python -m bot.main &
+          echo "Bot PID: $!"
+          # Keep alive
+          while true; do
+            sleep 60
+            if ! kill -0 $(pgrep -f "python -m bot.main") 2>/dev/null; then
+              echo "Bot process died, restarting..."
+              python -m bot.main &
+            fi
+          done

@@ -414,6 +414,8 @@ async def finish_place_creation(message, bot, user_id, data, has_photo=False, ph
 @flow_router.callback_query(F.data == "action_new_ad")
 async def cb_new_ad(callback: CallbackQuery):
     await callback.answer()
+    # start_new_ad lives in chat.py (defined there); local import avoids circulars
+    from bot.handlers.chat import start_new_ad
     await start_new_ad(callback.message)
 
 @flow_router.callback_query(F.data == "action_new_place")

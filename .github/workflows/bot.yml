@@ -1,9 +1,16 @@
 name: Telepost Bot 24/7
 
 on:
+  schedule:
+    # Restart twice a day as a safety net (the run itself lasts up to 14 days).
+    - cron: '41 5,17 * * *'
   push:
     branches: [main]
   workflow_dispatch:
+
+concurrency:
+  group: telepost-single
+  cancel-in-progress: true
 
 jobs:
   run-bot:
@@ -38,13 +45,15 @@ jobs:
           DB_PATH: data/telepost.db
           LOG_LEVEL: INFO
         run: |
+          set +e
           python -m bot.main &
           echo "Bot PID: $!"
-          # Keep alive
+          # Keep alive: restart the bot whenever its process dies
           while true; do
             sleep 60
-            if ! kill -0 $(pgrep -f "python -m bot.main") 2>/dev/null; then
-              echo "Bot process died, restarting..."
+            if ! pgrep -f "python -m bot.main" > /dev/null 2>&1; then
+              echo "Bot process died at $(date -u '+%H:%M:%SZ'), restarting..."
               python -m bot.main &
+              echo "Restarted with PID: $!"
             fi
           done

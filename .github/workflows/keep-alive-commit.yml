@@ -1,0 +1,41 @@
+name: Keep Alive Commit
+
+# GitHub auto-disables scheduled workflows in public repos after 60 days
+# without any commits. This workflow makes a tiny commit every 3 days,
+# resetting the inactivity timer and keeping all scheduled workflows alive.
+
+on:
+  schedule:
+    - cron: '23 3 */3 * *'  # every 3 days at 03:23 UTC (off-peak)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: keep-alive-commit
+  cancel-in-progress: false
+
+jobs:
+  keep-alive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Touch heartbeat file and commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          DATE=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          echo "keep-alive heartbeat: $DATE" > .github/keep-alive.txt
+          git config user.name "keep-alive[bot]"
+          git config user.email "keep-alive[bot]@users.noreply.github.com"
+          git add .github/keep-alive.txt
+          if git diff --cached --quiet; then
+            echo "No changes — should not happen (date changed). Forcing commit..."
+            git commit --allow-empty -m "chore: keep-alive $DATE [skip ci]"
+          else
+            git commit -m "chore: keep-alive $DATE [skip ci]"
+          fi
+          git push || echo "Push skipped (race with another run) — retry next cycle"

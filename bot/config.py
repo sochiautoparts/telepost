@@ -4,8 +4,15 @@ from dataclasses import dataclass, field
 from typing import List
 
 def _env(name, default=""):
-    v = os.getenv(name, default).strip()
+    v = os.getenv(name)
+    if v is None:
+        v = default
+    v = v.strip()
     if v.lower() in ("not_configured", "none", "null"): return ""
+    # Empty env value (e.g. an unset GitHub Actions secret arrives as "")
+    # must not wipe the default — fall back to it.
+    if not v and default:
+        return default
     return v
 
 @dataclass

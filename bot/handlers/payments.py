@@ -49,10 +49,9 @@ async def handle_channel_post(message: Message):
         await message.bot.set_message_reaction(
             chat_id=message.chat.id,
             message_id=message.message_id,
-            reaction=[
-                {"type": "emoji", "emoji": "👍"},
-                {"type": "emoji", "emoji": "🔥"},
-            ]
+            # Bots may set exactly ONE reaction — a list of two always
+            # fails with a 400 REACTION_INVALID.
+            reaction=[{"type": "emoji", "emoji": "👍"}],
         )
     except Exception as e:
         logger.debug(f"Channel reaction failed: {e}")

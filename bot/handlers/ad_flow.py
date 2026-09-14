@@ -1,5 +1,5 @@
 """Telepost Ad & Place Creation Flow — FSM via database state."""
-import logging, json
+import logging, json, html
 from aiogram import Router, F, Bot
 from aiogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from aiogram.filters import Command
@@ -17,6 +17,11 @@ flow_router = Router()
 
 # States: ad_title → ad_description → ad_price → ad_category → ad_city → ad_photo → (post)
 # States: place_name → place_category → place_phone → place_city → place_address → place_desc → place_photo → (post)
+
+# Media-group dedup: an album of N photos arrives as N separate updates which
+# aiogram may process concurrently — without this guard every photo of the
+# album would create its own duplicate ad. Bounded to avoid unbounded growth.
+_processed_media_groups: set = set()
 
 @flow_router.message(F.text, F.chat.type == "private")
 async def handle_flow_message(message: Message, bot: Bot):
@@ -69,6 +74,22 @@ async def handle_flow_photo(message: Message, bot: Bot):
         return
 
     data = json.loads(data_str) if data_str else {}
+
+    if state in ("ad_photo", "place_photo"):
+        # Album guard: only the FIRST photo of a media group is processed.
+        # The check+add below is synchronous (no await in between), so it is
+        # race-free even when sibling updates run concurrently.
+        mgid = getattr(message, "media_group_id", None)
+        if mgid:
+            if mgid in _processed_media_groups:
+                return  # Album sibling — already handled by the first photo
+            if len(_processed_media_groups) > 512:
+                _processed_media_groups.clear()
+            _processed_media_groups.add(mgid)
+        # Leave the *photo state immediately so later photos (album siblings
+        # or a quick double-send) no longer match the ad_photo/place_photo
+        # condition while the first one is being published.
+        await db.set_state(u.id, "posting", json.dumps(data))
 
     if state == "ad_photo":
         await handle_ad_photo(message, bot, u.id, data)
@@ -159,7 +180,7 @@ async def handle_ad_city(message, bot, user_id, text, data):
         InlineKeyboardButton(text="⏭ Без фото", callback_data="skip_photo")
     ]])
     await message.reply(
-        f"✅ Город: {text}\n\n"
+        f"✅ Город: {html.escape(text)}\n\n"
         f"Шаг 5: отправьте <b>фото</b> товара.\n"
         f"Можно отправить 1 фото. Или нажмите «Без фото».",
         reply_markup=kb
@@ -232,12 +253,12 @@ async def finish_ad_creation(message, bot, user_id, data, has_photo=False, photo
         # Clear state
         await db.clear_state(user_id)
 
-        # Set 3 reactions
+        # Set a reaction (Telegram allows bots exactly ONE reaction per message)
         try:
             await bot.set_message_reaction(
                 chat_id=f"@{config.CHANNEL_USERNAME}",
                 message_id=msg.message_id,
-                reaction=[{"type": "emoji", "emoji": "👍"}, {"type": "emoji", "emoji": "🔥"}]
+                reaction=[{"type": "emoji", "emoji": "👍"}]
             )
         except:
             pass
@@ -254,7 +275,7 @@ async def finish_ad_creation(message, bot, user_id, data, has_photo=False, photo
     except Exception as e:
         logger.error(f"Ad creation failed: {e}")
         await db.clear_state(user_id)
-        await message.reply(f"❌ Ошибка при создании объявления: {e}\n\nПопробуйте позже или напишите /start.")
+        await message.reply(f"❌ Ошибка при создании объявления: {html.escape(str(e))}\n\nПопробуйте позже или напишите /start.")
 
 # ─── PLACE FLOW ────────────────────────────────────────────────────────────
 
@@ -290,7 +311,7 @@ async def handle_place_category(message, bot, user_id, text, data):
     data["category"] = text
     await db.set_state(user_id, "place_phone", json.dumps(data))
     await message.reply(
-        f"✅ Категория: {text}\n\n"
+        f"✅ Категория: {html.escape(text)}\n\n"
         f"Шаг 3: укажите <b>телефон</b>.\n"
         f"Например: +7 999 123-45-67\n"
         f"Или напишите «нет» если нет телефона."
@@ -312,7 +333,7 @@ async def handle_place_city(message, bot, user_id, text, data):
         InlineKeyboardButton(text="⏭ Без описания", callback_data="skip_desc")
     ]])
     await message.reply(
-        f"✅ Город: {text}\n\n"
+        f"✅ Город: {html.escape(text)}\n\n"
         f"Шаг 5: отправьте <b>описание</b> организации.\n"
         f"Что вы предлагаете, часы работы, особенности.\n"
         f"Максимум 500 символов.",
@@ -386,12 +407,12 @@ async def finish_place_creation(message, bot, user_id, data, has_photo=False, ph
         await db.update_place_tg(place_id, msg.message_id, post_url)
         await db.clear_state(user_id)
 
-        # Set reactions
+        # Set a reaction (Telegram allows bots exactly ONE reaction per message)
         try:
             await bot.set_message_reaction(
                 chat_id=f"@{config.CHANNEL_USERNAME}",
                 message_id=msg.message_id,
-                reaction=[{"type": "emoji", "emoji": "👍"}, {"type": "emoji", "emoji": "👏"}]
+                reaction=[{"type": "emoji", "emoji": "👍"}]
             )
         except:
             pass
@@ -407,7 +428,7 @@ async def finish_place_creation(message, bot, user_id, data, has_photo=False, ph
     except Exception as e:
         logger.error(f"Place creation failed: {e}")
         await db.clear_state(user_id)
-        await message.reply(f"❌ Ошибка: {e}")
+        await message.reply(f"❌ Ошибка: {html.escape(str(e))}")
 
 # ─── Callback handlers ─────────────────────────────────────────────────────
 
@@ -433,9 +454,12 @@ async def cb_my_ads(callback: CallbackQuery):
 
 @flow_router.callback_query(F.data == "skip_city")
 async def cb_skip_city(callback: CallbackQuery):
-    await callback.answer()
     u = callback.from_user
     state, data_str = await db.get_state(u.id)
+    if state != "ad_city":
+        await callback.answer("Сессия устарела, начните заново /start", show_alert=True)
+        return
+    await callback.answer()
     data = json.loads(data_str) if data_str else {}
     data["city"] = ""
     await db.set_state(u.id, "ad_photo", json.dumps(data))
@@ -451,17 +475,23 @@ async def cb_skip_city(callback: CallbackQuery):
 
 @flow_router.callback_query(F.data == "skip_photo")
 async def cb_skip_photo(callback: CallbackQuery):
-    await callback.answer()
     u = callback.from_user
     state, data_str = await db.get_state(u.id)
+    if state != "ad_photo":
+        await callback.answer("Сессия устарела, начните заново /start", show_alert=True)
+        return
+    await callback.answer()
     data = json.loads(data_str) if data_str else {}
     await finish_ad_creation(callback.message, callback.bot, u.id, data, has_photo=False)
 
 @flow_router.callback_query(F.data == "skip_desc")
 async def cb_skip_desc(callback: CallbackQuery):
-    await callback.answer()
     u = callback.from_user
     state, data_str = await db.get_state(u.id)
+    if state != "place_desc":
+        await callback.answer("Сессия устарела, начните заново /start", show_alert=True)
+        return
+    await callback.answer()
     data = json.loads(data_str) if data_str else {}
     data["description"] = ""
     await db.set_state(u.id, "place_photo", json.dumps(data))
@@ -477,9 +507,12 @@ async def cb_skip_desc(callback: CallbackQuery):
 
 @flow_router.callback_query(F.data == "skip_place_photo")
 async def cb_skip_place_photo(callback: CallbackQuery):
-    await callback.answer()
     u = callback.from_user
     state, data_str = await db.get_state(u.id)
+    if state != "place_photo":
+        await callback.answer("Сессия устарела, начните заново /start", show_alert=True)
+        return
+    await callback.answer()
     data = json.loads(data_str) if data_str else {}
     await finish_place_creation(callback.message, callback.bot, u.id, data, has_photo=False)
 

@@ -77,6 +77,7 @@ async def main():
     finally:
         await ai_client.shutdown()
         await db.close_db()
+        await bot.session.close()
         logger.info("Bot stopped.")
 
 if __name__ == "__main__":

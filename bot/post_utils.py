@@ -36,7 +36,7 @@ def format_price(price: float, currency: str = "RUB") -> str:
 def format_ad_post(ad: dict, site_url: str = "https://telepost.space") -> str:
     """Format ad data into a Telegram channel post caption."""
     lines = []
-    lines.append(f"📢 <b>{escape_html(ad.get('title', ''))}</b>")
+    lines.append(f"📢 <b>{_esc(ad.get('title', ''), 100)}</b>")
 
     if ad.get("price"):
         price_str = format_price(ad["price"], ad.get("currency", "RUB"))
@@ -46,57 +46,73 @@ def format_ad_post(ad: dict, site_url: str = "https://telepost.space") -> str:
     lines.append(f"📂 {category}")
 
     if ad.get("city"):
-        lines.append(f"📍 {escape_html(ad['city'])}")
+        lines.append(f"📍 {_esc(ad['city'], 100)}")
 
     if ad.get("address"):
-        lines.append(f"🏷 {escape_html(ad['address'])}")
+        lines.append(f"🏷 {_esc(ad['address'], 100)}")
 
-    lines.append("")  # Empty line
+    footer = f"🌐 <a href=\"{site_url}\">Telepost.Space</a>"
+    # Caption budget: Telegram allows 1024 chars total, so the description
+    # limit shrinks if the escaped header lines grow (user input can expand
+    # 5x when escaped: & -> &amp;).
+    budget = 1024 - len(footer) - 3 - len("\n".join(lines))
 
     desc = ad.get("description", "")
     if desc:
-        # Truncate to 800 chars (Telegram caption limit is 1024)
-        if len(desc) > 800:
-            desc = desc[:797] + "..."
-        lines.append(escape_html(desc))
+        # Escape FIRST, then truncate — truncating raw text is not enough
+        # because escaping can expand it well past the caption limit.
+        desc = escape_html(desc)
+        limit = min(800, budget)
+        if len(desc) > limit:
+            desc = desc[:max(limit - 3, 0)] + "..."
+        lines.append(desc)
 
     lines.append("")
-    lines.append(f"🌐 <a href=\"{site_url}\">Telepost.Space</a>")
+    lines.append(footer)
 
     return "\n".join(lines)
 
 def format_place_post(place: dict, site_url: str = "https://telepost.space") -> str:
     """Format place/organization data into a channel post."""
     lines = []
-    lines.append(f"🏪 <b>{escape_html(place.get('name', ''))}</b>")
+    lines.append(f"🏪 <b>{_esc(place.get('name', ''), 100)}</b>")
 
     category = place.get("category", "other")
-    lines.append(f"📂 {category}")
+    lines.append(f"📂 {_esc(category, 60)}")
 
     if place.get("phone"):
-        lines.append(f"📞 {escape_html(place['phone'])}")
+        lines.append(f"📞 {_esc(place['phone'], 40)}")
 
     if place.get("website"):
         lines.append(f"🌐 <a href=\"{escape_html(place['website'])}\">Сайт</a>")
 
     if place.get("address"):
-        lines.append(f"📍 {escape_html(place['address'])}")
+        lines.append(f"📍 {_esc(place['address'], 100)}")
 
     if place.get("city"):
-        lines.append(f"🏙 {escape_html(place['city'])}")
+        lines.append(f"🏙 {_esc(place['city'], 100)}")
 
-    lines.append("")
+    footer = f"🌐 <a href=\"{site_url}\">Telepost.Space</a>"
+    budget = 1024 - len(footer) - 3 - len("\n".join(lines))
 
     desc = place.get("description", "")
     if desc:
-        if len(desc) > 600:
-            desc = desc[:597] + "..."
-        lines.append(escape_html(desc))
+        # Escape FIRST, then truncate (see format_ad_post).
+        desc = escape_html(desc)
+        limit = min(600, budget)
+        if len(desc) > limit:
+            desc = desc[:max(limit - 3, 0)] + "..."
+        lines.append(desc)
 
     lines.append("")
-    lines.append(f"🌐 <a href=\"{site_url}\">Telepost.Space</a>")
+    lines.append(footer)
 
     return "\n".join(lines)
+
+def _esc(text: str, limit: int) -> str:
+    """Escape HTML and clip the escaped result to `limit` chars."""
+    out = escape_html(text or "")
+    return out[:limit] if len(out) > limit else out
 
 def escape_html(text: str) -> str:
     """Escape HTML special characters."""

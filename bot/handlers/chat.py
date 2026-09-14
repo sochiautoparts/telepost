@@ -1,5 +1,5 @@
 """Telepost Chat Handler — /start, /help, /new, /my, /stats."""
-import logging, json
+import logging, json, time, html
 from aiogram import Router, F
 from aiogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.filters import Command
@@ -41,7 +41,8 @@ async def cmd_start(message: Message):
     ])
 
     await message.reply(
-        f"👋 Привет, {name}!\n\n"
+        # Bot default parse_mode is HTML — user names must be escaped
+        f"👋 Привет, {html.escape(name)}!\n\n"
         f"🛰 <b>Telepost.Space</b> — маркетплейс объявлений на карте.\n\n"
         f"Что я умею:\n"
         f"📍 Размещать объявления в канале @{config.CHANNEL_USERNAME}\n"
@@ -87,10 +88,16 @@ async def cmd_my(message: Message):
     if not ads:
         await message.reply("У вас пока нет объявлений. Напишите /new чтобы создать первое.")
         return
+    # Hide expired ads (expires_at == 0/null means "never expires")
+    now = int(time.time())
+    ads = [a for a in ads if not a["expires_at"] or a["expires_at"] > now]
+    if not ads:
+        await message.reply("⏳ Все ваши объявления истекли. Напишите /new чтобы создать новое.")
+        return
     text = "📋 <b>Ваши объявления:</b>\n\n"
     for ad in ads:
         status = "✅" if ad["status"] == "active" else "❌"
-        text += f"{status} <b>{ad['title']}</b>"
+        text += f"{status} <b>{html.escape(str(ad['title'] or ''))}</b>"
         if ad["price"]:
             text += f" — {int(ad['price'])} {ad['currency']}"
         text += f"\n   {config.SITE_URL}\n\n"
@@ -106,9 +113,9 @@ async def cmd_myplaces(message: Message):
         return
     text = "🏪 <b>Ваши организации:</b>\n\n"
     for p in places:
-        text += f"✅ <b>{p['name']}</b>"
+        text += f"✅ <b>{html.escape(str(p['name'] or ''))}</b>"
         if p["city"]:
-            text += f" — {p['city']}"
+            text += f" — {html.escape(str(p['city']))}"
         text += "\n"
     await message.reply(text, parse_mode="HTML")
 

@@ -2,8 +2,10 @@ name: Telepost Bot 24/7
 
 on:
   schedule:
-    # Restart twice a day as a safety net (the run itself lasts up to 14 days).
-    - cron: '41 5,17 * * *'
+    # Restart 4x a day, 6h apart. GitHub-hosted runners kill any job after 6h,
+    # so each run is capped at 350 min (see timeout-minutes below) and the next
+    # cron slot picks the bot back up — downtime stays ~10 min instead of ~50%.
+    - cron: '41 5,11,17,23 * * *'
   push:
     branches: [main]
   workflow_dispatch:
@@ -15,9 +17,22 @@ concurrency:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 20160  # 14 days max
+    timeout-minutes: 350  # GitHub-hosted runner jobs are killed at 6h (360 min)
     steps:
       - uses: actions/checkout@v4
+
+      - name: Create data directory
+        run: mkdir -p data
+
+      # Persist the SQLite DB across runs — without this every restart began
+      # with an empty database (actions/cache restore, freshest by run_id).
+      - name: Restore database
+        uses: actions/cache@v4
+        with:
+          path: data/telepost.db
+          key: telepost-db-${{ github.run_id }}
+          restore-keys: |
+            telepost-db-
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -27,9 +42,6 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-
-      - name: Create data directory
-        run: mkdir -p data
 
       - name: Start bot
         env:
@@ -57,3 +69,12 @@ jobs:
               echo "Restarted with PID: $!"
             fi
           done
+
+      # Save the DB even when the job is cancelled/times out so the next run
+      # can restore it (unique key per run avoids cache already-exists errors).
+      - name: Save database
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/telepost.db
+          key: telepost-db-${{ github.run_id }}

@@ -2,17 +2,25 @@ name: Telepost Bot 24/7
 
 on:
   schedule:
-    # Restart 4x a day, 6h apart. GitHub-hosted runners kill any job after 6h,
-    # so each run is capped at 350 min (see timeout-minutes below) and the next
-    # cron slot picks the bot back up — downtime stays ~10 min instead of ~50%.
+    # Safety-net: GitHub throttles free-account schedules to 1-3h. The real
+    # continuity comes from the re-dispatch step at the end of this workflow.
     - cron: '41 5,11,17,23 * * *'
   push:
     branches: [main]
+    # Ignore DB backups & keep-alive commits: a push-triggered run would kill
+    # the live bot (cancel-in-progress) and cause a restart loop.
+    paths-ignore:
+      - 'data/**'
+      - '.github/keep-alive.txt'
   workflow_dispatch:
 
 concurrency:
   group: telepost-single
   cancel-in-progress: true
+
+permissions:
+  contents: write
+  actions: write
 
 jobs:
   run-bot:
@@ -78,3 +86,38 @@ jobs:
         with:
           path: data/telepost.db
           key: telepost-db-${{ github.run_id }}
+
+      # Git backup of the DB — insurance against actions/cache eviction
+      # (7 days of repo inactivity). Push failures are non-fatal.
+      - name: Save database to git
+        if: always()
+        run: |
+          if [ -f data/telepost.db ]; then
+            git config user.name "Telepost Bot"
+            git config user.email "telepost-bot@users.noreply.github.com"
+            # Backup the live DB BEFORE switching branch (checkout would overwrite
+            # it with the stale version from origin/main)
+            cp data/telepost.db /tmp/telepost-live.db
+            git fetch origin main || true
+            git checkout -B db-update origin/main || true
+            mkdir -p data && cp /tmp/telepost-live.db data/telepost.db
+            git add -f data/telepost.db || true
+            git diff --staged --quiet || git commit -m "db: update $(date +%Y-%m-%d_%H:%M)" || true
+            git push origin db-update:main 2>&1 || echo "DB push skipped (newer commits — OK, cached via actions/cache)"
+          fi
+
+      # Re-dispatch: continuous 24/7 chain without relying on throttled cron.
+      - name: Re-dispatch workflow for 24/7
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          REPO=${{ github.repository }}
+          sleep 10
+          for i in 1 2 3; do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+              -H "Authorization: token $GH_TOKEN" -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/$REPO/actions/workflows/bot.yml/dispatches" -d '{"ref":"main"}')
+            if [ "$HTTP_CODE" = "204" ]; then echo "✅ Re-dispatched (attempt $i)"; break; fi
+            echo "❌ Attempt $i failed (HTTP $HTTP_CODE), retrying..."; sleep 15
+          done
